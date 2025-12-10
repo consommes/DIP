@@ -1,89 +1,163 @@
-# loader.py
-
+from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
+from typing import List
 
-import cv2
-import numpy as np
 import pandas as pd
 
 
+THIS_FILE = Path(__file__).resolve()
+PROJECT_ROOT = THIS_FILE.parents[2]          # 원대한_202311322_EIS/
+DATASET_ROOT = PROJECT_ROOT / "dataset"      # .../dataset
+LABEL_ROOT = DATASET_ROOT / "label"          # .../dataset/label
+
+
 @dataclass
-class EyeFrameSample:
-    subject: int          # 피험자 번호 (1, 2, 3, ...)
-    dist: int             # 30 or 50
-    pos: str              # 'F', 'L', 'R'
-    frame: int            # 프레임 번호 (0001, 0002, ...)
-    rgb: np.ndarray       # (H, W, 3)
-    ir: np.ndarray        # (H, W)
-    depth: np.ndarray     # (H, W)
-    gaze_xy: np.ndarray   # (N, 2) or (2,)  - csv 포맷에 따라
-
-def make_filename(sub: int, dist: int, modality: str,
-                  pos: str, frame: int, ext: str) -> str:
-
-    return f"s{sub:02d}_{dist}_{modality}_{pos}_{frame:04d}{ext}"
+class EyeFrame:
+    subject: str
+    data_type: str        # "30", "50", "VR"
+    modality: str         # "DEPTH", "IR", "RGB"
+    filename: str         # 예: s01_30_IR_F_0001.png
+    path: Path
+    leye_x: float
+    leye_y: float
+    reye_x: float
+    reye_y: float
 
 
-def load_eye_frame(sub: int, dist: int, pos: str, frame: int) -> EyeFrameSample:
+class EyeDataset:
+    def __init__(self, dataset_root: Path | str | None = None):
+        if dataset_root is None:
+            self.root = DATASET_ROOT
+        else:
+            self.root = Path(dataset_root).resolve()
 
-    cwd = Path.cwd()
-    dataset_root = cwd.parent.parent / "dataset"
+        if not self.root.exists():
+            raise FileNotFoundError(f"Dataset root not found: {self.root}")
 
-    # ex) dataset/s01/30/DEPTH
-    subject_dir = dataset_root / f"s{sub:02d}"
-    dist_dir    = subject_dir / str(dist)
+        if not LABEL_ROOT.exists():
+            raise FileNotFoundError(f"Label folder not found: {LABEL_ROOT}")
 
-    depth_dir = dist_dir / "DEPTH"
-    ir_dir    = dist_dir / "IR"
-    rgb_dir   = dist_dir / "RGB"
-    xy_dir    = dist_dir / "XY"
+    # -------------------------------------------------
+    # 1) Type1용 CSV: dataset/label/s01_30_DEPTH.csv ...
+    # -------------------------------------------------
+    def _load_label_csv(self, subject: str, data_type: str, modality: str) -> pd.DataFrame:
+        csv_name = f"{subject}_{data_type}_{modality}.csv"
+        csv_path = LABEL_ROOT / csv_name
 
-    # 파일 이름
-    depth_name = make_filename(sub, dist, "DEPTH", pos, frame, ".png")
-    ir_name    = make_filename(sub, dist, "IR",    pos, frame, ".png")
-    rgb_name   = make_filename(sub, dist, "RGB",   pos, frame, ".jpg")
-    xy_name    = make_filename(sub, dist, "XY",    pos, frame, ".csv")
+        if not csv_path.exists():
+            raise FileNotFoundError(csv_path)
 
-    # 전체 경로
-    depth_path = depth_dir / depth_name
-    ir_path    = ir_dir / ir_name
-    rgb_path   = rgb_dir / rgb_name
-    xy_path    = xy_dir / xy_name
+        df = pd.read_csv(csv_path)
+        return df
 
-    # 이미지 읽기
-    depth = cv2.imread(str(depth_path), cv2.IMREAD_UNCHANGED)
-    ir    = cv2.imread(str(ir_path),    cv2.IMREAD_GRAYSCALE)
-    rgb_bgr = cv2.imread(str(rgb_path), cv2.IMREAD_COLOR)
+    # -------------------------------------------------
+    # 2) Type1 프레임 리스트
+    # -------------------------------------------------
+    def load_type1(
+        self,
+        subject: str,
+        data_type: str,           # "30" or "50"
+        modality: str,            # "DEPTH", "IR", "RGB"
+        exclude_closed_eye: bool = True,
+    ) -> List[EyeFrame]:
 
-    if depth is None:
-        raise FileNotFoundError(f"Depth 이미지 로드 실패: {depth_path}")
-    if ir is None:
-        raise FileNotFoundError(f"IR 이미지 로드 실패: {ir_path}")
-    if rgb_bgr is None:
-        raise FileNotFoundError(f"RGB 이미지 로드 실패: {rgb_path}")
+        df = self._load_label_csv(subject, data_type, modality)
 
-    rgb = cv2.cvtColor(rgb_bgr, cv2.COLOR_BGR2RGB)
-    gaze_df = pd.read_csv(xy_path)
-    gaze_xy = gaze_df[['x', 'y']].to_numpy()
+        img_dir = self.root / subject / data_type / modality
+        if not img_dir.exists():
+            raise FileNotFoundError(img_dir)
 
-    return EyeFrameSample(
-        subject=sub,
-        dist=dist,
-        pos=pos,
-        frame=frame,
-        rgb=rgb,
-        ir=ir,
-        depth=depth,
-        gaze_xy=gaze_xy
-    )
+        frames: List[EyeFrame] = []
 
+        for _, row in df.iterrows():
+            filename = str(row["FILENAME"])
+            path = img_dir / filename
 
-if __name__ == "__main__":
-    """
-     # sample code
-    sample = load_eye_frame(sub=1, dist=30, pos='F', frame=1)
-    print("RGB shape :", sample.rgb.shape)
-    print("IR shape  :", sample.ir.shape)
-    print("Depth shape:", sample.depth.shape)
-    print("Gaze head :", sample.gaze_xy[:5])"""
+            le_x = float(row["LEYE_CENTER_X"])
+            le_y = float(row["LEYE_CENTER_Y"])
+            re_x = float(row["REYE_CENTER_X"])
+            re_y = float(row["REYE_CENTER_Y"])
+
+            # 네 좌표가 다 0이면 눈을 감아서 center 못 잡는 프레임
+            if exclude_closed_eye and le_x == 0 and le_y == 0 and re_x == 0 and re_y == 0:
+                continue
+
+            if not path.exists():
+                continue
+
+            frames.append(
+                EyeFrame(
+                    subject=subject,
+                    data_type=data_type,
+                    modality=modality,
+                    filename=filename,
+                    path=path,
+                    leye_x=le_x,
+                    leye_y=le_y,
+                    reye_x=re_x,
+                    reye_y=re_y,
+                )
+            )
+
+        return frames
+
+    # -------------------------------------------------
+    # 3) VR용 CSV: dataset/label/s01_VR_IR.csv
+    # -------------------------------------------------
+    def _load_vr_csv(self, subject: str) -> pd.DataFrame:
+        csv_name = f"{subject}_VR_IR.csv"
+        csv_path = LABEL_ROOT / csv_name
+
+        if not csv_path.exists():
+            raise FileNotFoundError(csv_path)
+
+        return pd.read_csv(csv_path)
+
+    def load_vr(
+        self,
+        subject: str,
+        exclude_closed_eye: bool = True,
+    ) -> List[EyeFrame]:
+
+        data_type = "VR"
+        modality = "IR"
+
+        df = self._load_vr_csv(subject)
+        img_dir = self.root / subject / data_type / modality
+        if not img_dir.exists():
+            raise FileNotFoundError(img_dir)
+
+        frames: List[EyeFrame] = []
+
+        for _, row in df.iterrows():
+            filename = str(row["FILENAME"])
+            path = img_dir / filename
+
+            le_x = float(row["LEYE_CENTER_X"])
+            le_y = float(row["LEYE_CENTER_Y"])
+            re_x = float(row["REYE_CENTER_X"])
+            re_y = float(row["REYE_CENTER_Y"])
+
+            # VR에서도 네 좌표 모두 0이면 center 추출 불가 프레임
+            if exclude_closed_eye and le_x == 0 and le_y == 0 and re_x == 0 and re_y == 0:
+                continue
+
+            if not path.exists():
+                continue
+
+            frames.append(
+                EyeFrame(
+                    subject=subject,
+                    data_type=data_type,
+                    modality=modality,
+                    filename=filename,
+                    path=path,
+                    leye_x=le_x,
+                    leye_y=le_y,
+                    reye_x=re_x,
+                    reye_y=re_y,
+                )
+            )
+
+        return frames
