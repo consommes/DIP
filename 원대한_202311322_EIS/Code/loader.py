@@ -28,7 +28,7 @@ def make_filename(sub: int, dist: int, modality: str,
 def load_eye_frame(sub: int, dist: int, pos: str, frame: int) -> EyeFrameSample:
 
     cwd = Path.cwd()
-    dataset_root = cwd / "dataset"
+    dataset_root = cwd.parent.parent / "dataset"
 
     # ex) dataset/s01/30/DEPTH
     subject_dir = dataset_root / f"s{sub:02d}"
@@ -63,12 +63,8 @@ def load_eye_frame(sub: int, dist: int, pos: str, frame: int) -> EyeFrameSample:
     if rgb_bgr is None:
         raise FileNotFoundError(f"RGB 이미지 로드 실패: {rgb_path}")
 
-    # BGR -> RGB 변환
     rgb = cv2.cvtColor(rgb_bgr, cv2.COLOR_BGR2RGB)
-
-    # 시선 좌표 읽기 (컬럼명은 실제 csv 보고 맞게 수정해야 함)
     gaze_df = pd.read_csv(xy_path)
-    # 예시: csv 안에 'x', 'y' 라는 두 컬럼이 있다고 가정
     gaze_xy = gaze_df[['x', 'y']].to_numpy()
 
     return EyeFrameSample(
@@ -84,9 +80,10 @@ def load_eye_frame(sub: int, dist: int, pos: str, frame: int) -> EyeFrameSample:
 
 
 if __name__ == "__main__":
-    # 예시: s01, 거리 30cm, 시점 F, 프레임 1
+    """
+     # sample code
     sample = load_eye_frame(sub=1, dist=30, pos='F', frame=1)
     print("RGB shape :", sample.rgb.shape)
     print("IR shape  :", sample.ir.shape)
     print("Depth shape:", sample.depth.shape)
-    print("Gaze head :", sample.gaze_xy[:5])
+    print("Gaze head :", sample.gaze_xy[:5])"""
