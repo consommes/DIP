@@ -4,3 +4,6 @@ __pycache__/
 .ipynb_checkpoints/
 dataset/
 results/
+results_vr
+results_rgbir
+__pycache__
